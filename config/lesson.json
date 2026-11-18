@@ -1,0 +1,107 @@
+{
+  "schema": "edu-drm-lab/course@1",
+  "course": {
+    "id": "course-authorization-lab",
+    "title": "授权教学媒体播放实验",
+    "subtitle": "自制课程内容 · 测试密钥专用 · 非商业 DRM",
+    "summary": "用自制短片、测试密钥与浏览器 ClearKey 测试密钥系统，完整演练加密封装、许可取得、密钥可用与真实解码。"
+  },
+  "license": {
+    "keySystem": "org.w3.clearkey",
+    "keySystemLabel": "W3C ClearKey 测试密钥系统",
+    "endpointPath": "/api/license",
+    "robustness": "软件测试密钥，不具备硬件 DRM 保护"
+  },
+  "mediaAsset": {
+    "assetId": "lesson-authorization-01",
+    "primaryKeyId": "kid-primary",
+    "title": "授权链路演示片（自制）",
+    "manifest": "/media/packaged/lesson-authorization-01/manifest.json"
+  },
+  "credentials": [
+    {
+      "id": "kid-primary",
+      "label": "正常测试密钥",
+      "kidHex": "11111111111111111111111111111111",
+      "role": "primary"
+    },
+    {
+      "id": "kid-standby",
+      "label": "备用测试标识（非本片封装标识）",
+      "kidHex": "33333333333333333333333333333333",
+      "role": "standby"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "normal",
+      "label": "正常播放",
+      "summary": "初始化数据、密钥标识与许可响应相互匹配。",
+      "credentialId": "kid-primary",
+      "initDataMode": "as-packaged",
+      "expect": "granted",
+      "teachingPoint": "三个阶段依次成立，才算验证了加密链。"
+    },
+    {
+      "id": "init-data-mismatch",
+      "label": "改动初始化数据",
+      "summary": "把 pssh 中的密钥标识改为未知标识，许可端无法匹配课程密钥。",
+      "credentialId": "kid-primary",
+      "initDataMode": "tampered-kid",
+      "tamperedKidHex": "99999999999999999999999999999999",
+      "expect": "denied-unknown-kid",
+      "teachingPoint": "初始化数据参与许可校验，改动后许可端拒绝。"
+    },
+    {
+      "id": "wrong-key",
+      "label": "错误密钥",
+      "summary": "使用与本片封装不匹配的备用标识生成许可请求；许可端认识该标识，但拒绝为这个资产发钥。",
+      "credentialId": "kid-standby",
+      "initDataMode": "credential-kid",
+      "expect": "denied-key-mismatch",
+      "teachingPoint": "许可端分别处理未知标识与凭据不匹配，不返回任何密钥。"
+    },
+    {
+      "id": "license-offline",
+      "label": "许可端断开",
+      "summary": "播放器请求未监听的本地许可端口，许可取得阶段直接失败。",
+      "credentialId": "kid-primary",
+      "initDataMode": "as-packaged",
+      "licenseTarget": "offline",
+      "expect": "unreachable",
+      "teachingPoint": "网络失败不会伪造密钥可用或画面成功。"
+    }
+  ],
+  "diagnostics": [
+    {
+      "id": "session-failure",
+      "label": "诊断：会话创建失败",
+      "summary": "向浏览器 CDM 申请不受支持的 persistent-license 会话，真实触发会话创建失败。",
+      "credentialId": "kid-primary",
+      "initDataMode": "as-packaged",
+      "sessionType": "persistent-license",
+      "expect": "session-failed",
+      "teachingPoint": "会话建立失败在许可请求之前单独分类。"
+    },
+    {
+      "id": "mismatched-key-material",
+      "label": "诊断：正确许可 + 错误密钥材料",
+      "summary": "许可端正常返回 200，客户端模拟损坏的密钥材料；密钥显示可用，但媒体无法解码。",
+      "credentialId": "kid-primary",
+      "initDataMode": "as-packaged",
+      "licenseTransform": "corrupt-key-material",
+      "expect": "media-decode-failed",
+      "teachingPoint": "收到许可、甚至密钥状态可用，都不等于画面可解码。"
+    }
+  ],
+  "protection": {
+    "strength": "software-test-key",
+    "label": "软件测试密钥（ClearKey）",
+    "limits": [
+      "密钥在客户端软件中可用，没有硬件信任根与防篡改边界。",
+      "无法抵御对播放环境有控制权的用户提取或替换密钥材料。",
+      "不具备商业硬件 DRM（如 Widevine L1、PlayReady SL3000、FairPlay）的保密与健壮性保证。",
+      "仅用于本地虚构课程与授权链路教学，不用于真实版权内容。"
+    ]
+  }
+}

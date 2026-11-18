@@ -1,0 +1,9 @@
+本目录字体文件由 GNU Unifont / 文泉驿微米黑（WenQuanYi Micro Hei）子集化而来，
+仅包含本项目自制课程界面与字幕中实际使用的字形。
+
+原始字体：WenQuanYi Micro Hei 0.2.0-beta
+版权：2008-2009 The WenQuanYi Project Board of Trustees；部分字形来自
+Google Droid Sans Fallback（2006-2008 Google Corporation / Steve Matteson）。
+许可：Apache License 2.0 或 GPL-3+ with Font exception。
+
+生成方式：pyftsubset（fontTools），仅用于本项目演示，不再分发原始字体全集。

@@ -1,0 +1,48 @@
+{
+  "schema": "edu-drm-lab/package@1",
+  "asset": {
+    "assetId": "lesson-authorization-01",
+    "primaryKeyId": "kid-primary",
+    "protectionLabel": "CENC AES-CTR + ClearKey 测试密钥（软件密钥）",
+    "durationSeconds": 36,
+    "mimeType": "video/mp4"
+  },
+  "input": {
+    "assPath": "media/source/lesson.ass",
+    "fontDirectory": "media/source/fonts",
+    "videoSource": "gradients=s=1280x720:r=24:d=36:c0=0x07111F:c1=0x123A5E:x0=0:y0=0:x1=1280:y1=720:seed=11",
+    "overlays": [
+      "drawgrid=w=80:h=80:t=1:c=0xFFFFFF@0.05",
+      "drawbox=x=0:y=0:w=1280:h=5:c=0x4CC9F0@0.85:t=fill",
+      "drawbox=x=0:y=715:w=1280:h=5:c=0x4CC9F0@0.85:t=fill"
+    ],
+    "audioSource": "sine=frequency=330:sample_rate=48000:duration=36"
+  },
+  "video": {
+    "codec": "avc1.640028",
+    "mimeType": "video/mp4; codecs=\"avc1.640028\"",
+    "profile": "high",
+    "level": 4,
+    "gop": 72,
+    "bitrate": "1200k",
+    "bufferSize": "2400k",
+    "width": 1280,
+    "height": 720
+  },
+  "audio": {
+    "codec": "mp4a.40.2",
+    "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"",
+    "bitrate": "96k",
+    "sampleRate": 48000,
+    "channels": 2
+  },
+  "packaging": {
+    "protectionScheme": "cenc",
+    "segmentSeconds": 3,
+    "defaultIvHex": "000102030405060708090a0b0c0d0e0f"
+  },
+  "output": {
+    "directory": "media/packaged/lesson-authorization-01",
+    "plainFileName": "plain-reference.mp4"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "edu-drm-lab",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "授权教学媒体播放实验：自制内容 + 测试密钥 + 浏览器 ClearKey 的真实 CENC 加密封装与解密播放",
+  "scripts": {
+    "start": "node server/app.mjs",
+    "package:media": "node tools/package-media.mjs",
+    "license:demo": "node tools/license-demo.mjs",
+    "verify:flow": "node tests/flow.test.mjs",
+    "verify:browser": "node tests/browser-playback.mjs"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.3.0",
+    "playwright-core": "^1.49.0",
+    "shaka-packager": "^3.9.3"
+  }
+}

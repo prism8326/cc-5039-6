@@ -23,3 +23,10 @@ __pycache__/
 *.log
 .env
 .env.*
+
+# 授权教学实验的本地运行环境与产物
+.sysroot/
+.chrome/
+.cache/
+.verify/
+media/packaged/

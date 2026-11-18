@@ -1,0 +1,39 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1280
+PlayResY: 720
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+YCbCr Matrix: None
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Title,WenQuanYi Micro Hei,58,&H00FFFFFF,&H000000FF,&H00081218,&HB0000812,1,0,0,0,100,100,2,0,1,3,2,5,60,60,60,1
+Style: Body,WenQuanYi Micro Hei,30,&H00E6F3FF,&H000000FF,&H00081218,&HB0000812,0,0,0,0,100,100,0,0,1,2,1,2,70,70,56,1
+Style: Small,WenQuanYi Micro Hei,22,&H0099B4C8,&H000000FF,&H00081218,&HB0000812,0,0,0,0,100,100,1,0,1,1,1,1,40,40,32,1
+Style: Act,WenQuanYi Micro Hei,24,&H00FFD166,&H000000FF,&H00081218,&HB0000812,1,0,0,0,100,100,2,0,1,2,1,7,50,50,40,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:12.00,Act,,0,0,0,,第一幕 · 自制课程内容
+Dialogue: 0,0:00:00.00,0:00:04.00,Title,,0,0,0,,授权教学媒体播放实验
+Dialogue: 0,0:00:00.00,0:00:04.00,Body,,0,0,0,,本地虚构课程 · 测试密钥专用
+Dialogue: 0,0:00:04.00,0:00:08.00,Title,,0,0,0,,不是普通视频文件
+Dialogue: 0,0:00:04.00,0:00:08.00,Body,,0,0,0,,画面来自 CENC 加密封装的分片
+Dialogue: 0,0:00:08.00,0:00:12.00,Title,,0,0,0,,明文播放成功 ≠ 加密链已验证
+Dialogue: 0,0:00:08.00,0:00:12.00,Body,,0,0,0,,必须同时走通许可、密钥与解码
+Dialogue: 0,0:00:12.00,0:00:24.00,Act,,0,0,0,,第二幕 · 实际加密封装
+Dialogue: 0,0:00:12.00,0:00:16.00,Title,,0,0,0,,AES-CTR 加密每一个采样
+Dialogue: 0,0:00:12.00,0:00:16.00,Body,,0,0,0,,ISO/IEC 23001-7 CENC · cenc 方案
+Dialogue: 0,0:00:16.00,0:00:20.00,Title,,0,0,0,,初始化数据携带密钥标识
+Dialogue: 0,0:00:16.00,0:00:20.00,Body,,0,0,0,,pssh 中的 KID 必须与封装一致
+Dialogue: 0,0:00:20.00,0:00:24.00,Title,,0,0,0,,测试密钥只服务本地虚构课程
+Dialogue: 0,0:00:20.00,0:00:24.00,Body,,0,0,0,,许可端校验标识后才返回密钥
+Dialogue: 0,0:00:24.00,0:00:36.00,Act,,0,0,0,,第三幕 · 三阶段验证
+Dialogue: 0,0:00:24.00,0:00:28.00,Title,,0,0,0,,许可取得
+Dialogue: 0,0:00:24.00,0:00:28.00,Body,,0,0,0,,响应必须与初始化数据匹配
+Dialogue: 0,0:00:28.00,0:00:32.00,Title,,0,0,0,,密钥可用
+Dialogue: 0,0:00:28.00,0:00:32.00,Body,,0,0,0,,浏览器 CDM 报告密钥状态 usable
+Dialogue: 0,0:00:32.00,0:00:36.00,Title,,0,0,0,,媒体实际可解码
+Dialogue: 0,0:00:32.00,0:00:36.00,Body,,0,0,0,,解密后持续出帧，播放时钟推进
+Dialogue: 0,0:00:00.00,0:00:36.00,Small,,0,0,0,,资产 lesson-authorization-01
