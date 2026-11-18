@@ -41,10 +41,11 @@ npm start               # 启动本地服务
 | 区域 | 说明 |
 | --- | --- |
 | 测试凭据 | 选择用于本轮的测试密钥标识；主标识与封装清单一致，备用标识用于错误密钥场景。 |
-| 实验场景 | 正常播放、改动初始化数据、错误密钥、许可端断开，另有两条诊断。 |
+| 实验场景 | 正常播放、改动初始化数据、错误密钥、许可端断开，另有五条诊断（含密钥更新、会话结束与旧版接口配置）。 |
 | 播放器 | 只有真实解密出帧后才会显示画面；遮罩文字来自内核失败反馈。 |
 | 授权状态 | 五个阶段：测试密钥系统 → 密钥会话 → 许可取得 → 密钥可用 → 媒体实际可解码。 |
-| 内核事件 | 逐条记录初始化数据、许可响应、密钥状态与解码帧数。 |
+| 加密会话接口 | 页眉标注当前接入版本 `eme-session/v2`（自 `eme-session/v1` 升级）。 |
+| 内核事件 | 逐条记录初始化数据、许可响应、密钥状态、密钥更新、会话关闭与解码帧数。 |
 
 **判定原则**：收到许可响应不会直接显示授权成功。只有许可取得、密钥可用、媒体实际可解码
 三个阶段全部成立，结果区才显示「已验证」。任何阶段失败，后续阶段标记为「已中止」。
@@ -61,9 +62,36 @@ npm start               # 启动本地服务
 | 许可端断开 | 请求未监听的本地端口 | 许可取得失败：网络不可达 |
 | 诊断：会话创建失败 | 请求 `persistent-license` 会话 | 密钥会话失败：`NotSupportedError` |
 | 诊断：正确许可 + 错误密钥材料 | 许可 200，客户端密钥材料被替换 | 密钥状态仍 usable，但**解码失败**，验证「密钥可用 ≠ 画面可解码」 |
+| 诊断：旧版会话接口配置 | 场景把会话接口固定为 `eme-session/v1` | 密钥会话失败：`legacy-session-interface`，界面给出失效原因 |
+| 诊断：密钥更新 | 首次许可后重新取许可，同一会话再次 `update()` | 五阶段全部通过，证据注明更新次数与 `keystatuseschange` 事件数 |
+| 诊断：会话结束与资源释放 | 出帧后显式 `close()` 会话 | 五阶段全部通过，`keyStatuses` 释放且画面停止推进 |
 
 许可端只服务本地虚构课程；错误密钥、未知标识、未知资产、格式错误、会话类型不支持分别返回
 不同状态码与原因，且**不输出密钥材料到普通日志**（日志只含密钥标识的短指纹）。
+
+---
+
+## 加密会话接口版本（eme-session/v2）
+
+播放内核不直接调用 EME，而是经过加密会话适配层（`ui/js/eme-session-adapter.js`）。当前接入版本为
+**`eme-session/v2`**，由 **`eme-session/v1`** 升级而来；版本号同时标注在课程配置
+（`config/lesson.json` 的 `sessionInterface`）、图形页眉与每轮实验的内核事件中。
+
+v1 → v2 的迁移点：
+
+| 契约面 | eme-session/v1（已下线） | eme-session/v2（当前） |
+| --- | --- | --- |
+| 配置 | 散落在内核中隐式拼装 | 适配层统一生成并显式化：`initDataTypes` / 音视频能力 / `sessionTypes` / `distinctiveIdentifier` / `persistentState` |
+| 事件 | 定时轮询 `keyStatuses` | `message` / `messageerror` / `keystatuseschange` 事件驱动（重复更新同一密钥不再触发事件时，以 CDM 当前报告为准并如实记录事件数） |
+| 密钥状态映射 | 只认 `usable`，其余含糊带过 | `usable` / `expired` / `released` / `output-restricted` / `status-pending` / `internal-error` 全量映射；**未知状态直接报错，不以默认值遮错** |
+| 生命周期 | 不关闭会话，丢弃引用 | 显式 `close()` 并校验 `keyStatuses` 已释放；停止、换场、场景结束都走同一回收路径并留下事件证据 |
+
+旧配置的失效是可解释的：把场景固定到 `eme-session/v1`（诊断「旧版会话接口配置」）时，适配层在
+密钥会话阶段拒绝，并说明「v1 直接调用 CDM、轮询密钥状态且不做关闭回收」，而不是静默改用新版本。
+
+**可播放状态与资源释放的执行证据**：正常与密钥更新场景以「播放时钟推进 + 解码帧数增长」作证；
+会话结束场景以「`close()` 完成、`keyStatuses` 清空、关闭后观察窗内帧数不再增长」作证，证据写入
+阶段备注与 `.verify/results.json`。
 
 ---
 
@@ -117,19 +145,25 @@ npm run license:demo
 ## 验证
 
 ```bash
-npm run verify:flow     # 许可内核断言（含日志脱敏检查）
-npm run verify:browser  # 真实浏览器：六个场景 + 界面状态 + 播放推进
+npm run verify:flow     # 许可内核断言（含日志脱敏检查与会话接口配置核对）
+npm run verify:browser  # 真实浏览器：九个场景 + 界面状态 + 播放推进 + 释放证据
 ```
 
 `verify:browser` 通过页面控件选择场景与凭据、点击「开始实验」，然后断言：
 
 - 正常场景五阶段全绿、`已验证`、无失败提示，且播放时钟推进、帧数增长；
 - 其余场景在预期阶段失败、界面显示 `未通过`，且不会误报成功；
+- 旧版会话接口诊断的界面提示必须包含 `eme-session/v1`（失效原因可解释）；
+- 密钥更新诊断的 `keyUpdates ≥ 2`；会话结束诊断的 `sessionRelease` 必须
+  `closed / keyStatusesReleased / playbackHalted` 全为真；
+- 每轮断言内核注入的适配层版本为 `eme-session/v2`；
 - 截图保存在 `.verify/`。
 
 已验证的观测（本机 Chrome 158 / Linux arm64）：正常场景 1.5 秒内播放位置
-`0.30s → 1.80s`、解码帧 `11 → 47`；错误密钥材料时密钥状态为
-`usable` 但媒体报 `PIPELINE_ERROR_DECODE`，界面停在「媒体实际可解码」。
+`0.30s → 1.78s`、解码帧 `11 → 47`；错误密钥材料时密钥状态为
+`usable` 但媒体报 `PIPELINE_ERROR_DECODE`，界面停在「媒体实际可解码」；密钥更新场景同一会话
+`update` 2 次、`keystatuseschange` 事件 1 次（重复同一密钥不再触发事件）；会话结束场景
+`close()` 后 `keyStatuses` 清空，观察窗内帧数 `12 → 12` 不再增长。
 
 ---
 
@@ -151,7 +185,7 @@ npm run verify:browser  # 真实浏览器：六个场景 + 界面状态 + 播放
 ## 目录
 
 ```
-config/lesson.json          课程、凭据、场景、保护强度声明（无密钥材料）
+config/lesson.json          课程、凭据、场景、会话接口版本、保护强度声明（无密钥材料）
 config/test-keys.json       测试密钥材料（仅许可端读取）
 config/package.json         封装参数
 media/source/lesson.ass     自制裁剪字幕
@@ -161,6 +195,7 @@ tools/license-demo.mjs      许可演练 CLI（辅助）
 server/license-service.mjs  许可内核（图形与 CLI 共用）
 server/app.mjs              静态服务 + 许可接口
 shared/stages.js            阶段、判定与原因文案
+ui/js/eme-session-adapter.js 加密会话适配层（接入版本 eme-session/v2）
 ui/js/kernel.js             加密教学内核（驱动控件与状态判定）
 ui/js/app.js                图形界面
 tests/flow.test.mjs         许可断言

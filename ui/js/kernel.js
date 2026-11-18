@@ -5,10 +5,18 @@ import {
   reasonText,
   SERVER_OUTCOME_REASONS
 } from "../../shared/stages.js";
+import {
+  LEGACY_SESSION_INTERFACE_VERSION,
+  SESSION_INTERFACE_NOTE,
+  SessionContractError,
+  explainLegacyInterface
+} from "./eme-session-adapter.js";
 
 const DEFAULT_TIMEOUT_MS = 4000;
 const DECODE_TIMEOUT_MS = 12000;
 const KEY_STATUS_TIMEOUT_MS = 3000;
+const RELEASE_OBSERVE_FIRST_MS = 600;
+const RELEASE_OBSERVE_SECOND_MS = 800;
 
 function bytesToBase64Url(bytes) {
   let binary = "";
@@ -66,18 +74,37 @@ class StageError extends Error {
   }
 }
 
+function toStageError(stage, error, fallbackReason = "internal-error") {
+  if (error instanceof StageError) return error;
+  if (error instanceof SessionContractError) {
+    return new StageError(stage, error.reason, null, error.evidence ?? error.message);
+  }
+  return new StageError(
+    stage,
+    fallbackReason,
+    null,
+    `${error?.name ?? "Error"}: ${error?.message ?? error}`.trim()
+  );
+}
+
 export class EncryptionLab {
-  constructor({ video, course, fetchImpl, onEvent = () => {} }) {
+  constructor({ video, course, sessionAdapter, fetchImpl, onEvent = () => {} }) {
+    if (!sessionAdapter) {
+      throw new Error("加密教学内核要求显式注入加密会话适配层（sessionAdapter），不允许以默认值遮错");
+    }
     this.video = video;
     this.course = course;
+    this.sessionAdapter = sessionAdapter;
     this.fetch = fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.onEvent = onEvent;
     this.manifest = null;
     this.scenario = null;
     this.rows = {};
     this.activeRun = 0;
+    this.activeStage = null;
     this.media = null;
     this.playback = null;
+    this.managedSession = null;
     this.abortController = null;
     this.lastOutcome = null;
   }
@@ -88,6 +115,7 @@ export class EncryptionLab {
 
   setStage(id, state, { reason = null, evidence = null } = {}) {
     if (!this.rows[id]) return;
+    if (state === "active") this.activeStage = id;
     this.rows[id] = { state, reason, evidence };
     this.emit("stage", { id, state, reason, evidence, stages: this.snapshotStages() });
   }
@@ -99,6 +127,7 @@ export class EncryptionLab {
   }
 
   reset(stages = createStageState()) {
+    this.activeStage = null;
     this.rows = Object.fromEntries(
       STAGE_IDS.map((id) => {
         const s = stages[id] ?? { state: "pending" };
@@ -114,18 +143,6 @@ export class EncryptionLab {
     if (!response.ok) throw new Error(`无法读取媒体清单：HTTP ${response.status}`);
     this.manifest = await response.json();
     return this.manifest;
-  }
-
-  capabilityConfig() {
-    const manifest = this.manifest;
-    return [
-      {
-        initDataTypes: ["cenc"],
-        videoCapabilities: [{ contentType: manifest.tracks.video.mimeType }],
-        audioCapabilities: [{ contentType: manifest.tracks.audio.mimeType }],
-        sessionTypes: ["temporary"]
-      }
-    ];
   }
 
   abort() {
@@ -152,13 +169,20 @@ export class EncryptionLab {
     } catch {
       /* 忽略清理错误 */
     }
-    if (this.session) {
-      try {
-        this.session.close().catch(() => {});
-      } catch {
-        /* 会话可能已关闭 */
-      }
-      this.session = null;
+    if (this.managedSession) {
+      const managed = this.managedSession;
+      this.managedSession = null;
+      managed
+        .close({ timeoutMs: DEFAULT_TIMEOUT_MS })
+        .then((release) => this.emit("session-release", { ...release, trigger: "teardown" }))
+        .catch((error) =>
+          this.emit("session-release", {
+            closed: false,
+            keyStatusesReleased: false,
+            trigger: "teardown",
+            error: error?.message ?? String(error)
+          })
+        );
     }
   }
 
@@ -201,6 +225,11 @@ export class EncryptionLab {
         this.failFrom(context, error);
         return this.finish(context, { ok: false, stage: error.stage, reason: error.reason });
       }
+      if (error instanceof SessionContractError) {
+        const mapped = toStageError(this.activeStage ?? "decode", error);
+        this.failFrom(context, mapped);
+        return this.finish(context, { ok: false, stage: mapped.stage, reason: mapped.reason });
+      }
       this.setStage("decode", "failed", { reason: "internal-error", evidence: error?.message ?? null });
       this.blockAfter("decode");
       return this.finish(context, { ok: false, stage: "decode", reason: "internal-error" });
@@ -219,7 +248,8 @@ export class EncryptionLab {
     this.lastOutcome = {
       ...outcome,
       scenarioId: context.scenario.id,
-      elapsedMs: Math.round(performance.now() - context.startedAt)
+      elapsedMs: Math.round(performance.now() - context.startedAt),
+      evidence: context.evidence
     };
     this.emit("run-end", { outcome: this.lastOutcome, stages: this.snapshotStages() });
     return this.lastOutcome;
@@ -257,7 +287,7 @@ export class EncryptionLab {
     try {
       const access = await navigator.requestMediaKeySystemAccess(
         this.course.license.keySystem,
-        this.capabilityConfig()
+        this.sessionAdapter.buildAccessConfig(this.manifest)
       );
       context.access = access;
       const config = access.getConfiguration();
@@ -270,7 +300,13 @@ export class EncryptionLab {
         label: this.course.license.keySystemLabel,
         videoType
       });
+      this.emit("session-interface", {
+        version: this.sessionAdapter.version,
+        previousVersion: LEGACY_SESSION_INTERFACE_VERSION,
+        note: SESSION_INTERFACE_NOTE
+      });
     } catch (error) {
+      if (error instanceof SessionContractError) throw toStageError("support", error);
       const reason =
         error?.name === "NotSupportedError" ? "unsupported-media-capability" : "unsupported-key-system";
       throw new StageError("support", reason, null, `${error?.name ?? "Error"}: ${error?.message ?? ""}`.trim());
@@ -280,12 +316,16 @@ export class EncryptionLab {
   async stageSession(context) {
     this.setStage("session", "active");
     const { scenario } = context;
+    const requestedInterface = scenario.sessionInterface ?? this.sessionAdapter.version;
+    if (requestedInterface !== this.sessionAdapter.version) {
+      throw new StageError("session", "legacy-session-interface", null, explainLegacyInterface(requestedInterface));
+    }
     const sessionType = scenario.sessionType ?? "temporary";
     let mediaKeys;
     try {
-      mediaKeys = await context.access.createMediaKeys();
+      mediaKeys = await this.sessionAdapter.createMediaKeys(context.access);
     } catch (error) {
-      throw new StageError("session", "session-error", null, `createMediaKeys 失败：${error?.name}`);
+      throw toStageError("session", error, "session-error");
     }
     context.mediaKeys = mediaKeys;
     try {
@@ -293,28 +333,23 @@ export class EncryptionLab {
     } catch (error) {
       throw new StageError("session", "session-error", null, `setMediaKeys 失败：${error?.name}`);
     }
-    let session;
+    let managed;
     try {
-      session = mediaKeys.createSession(sessionType);
+      managed = this.sessionAdapter.openSession(mediaKeys, sessionType);
     } catch (error) {
-      const reason =
-        error?.name === "NotSupportedError" ? "session-unsupported" : "session-failed";
-      throw new StageError(
-        "session",
-        reason,
-        null,
-        `createSession('${sessionType}') → ${error?.name ?? "Error"}`
-      );
+      throw toStageError("session", error, "session-failed");
     }
-    context.session = session;
+    context.managedSession = managed;
     context.sessionType = sessionType;
-    this.session = session;
-    this.setStage("session", "passed", { evidence: `会话类型 ${sessionType}` });
+    this.managedSession = managed;
+    this.setStage("session", "passed", {
+      evidence: `会话类型 ${sessionType} · 接口 ${this.sessionAdapter.version}`
+    });
   }
 
   async stageLicense(context) {
     this.setStage("license", "active");
-    const { session, scenario, credential } = context;
+    const { scenario, credential, managedSession } = context;
     const manifest = this.manifest;
     const packagedPssh = decodePssh(manifest.initData.boxBase64);
 
@@ -341,50 +376,11 @@ export class EncryptionLab {
     context.requestedKid = requestedKid;
     this.emit("license-init", { note: initDataNote, kid: requestedKid });
 
-    const messagePromise = new Promise((resolve, reject) => {
-      const onMessage = (event) => {
-        cleanup();
-        resolve(event.message);
-      };
-      const onMessageError = () => {
-        cleanup();
-        reject(new Error("license message error"));
-      };
-      const onError = () => {
-        cleanup();
-        reject(new Error("MediaKeySession error before license request"));
-      };
-      function cleanup() {
-        session.removeEventListener("message", onMessage);
-        session.removeEventListener("messageerror", onMessageError);
-        session.removeEventListener("error", onError);
-      }
-      session.addEventListener("message", onMessage);
-      session.addEventListener("messageerror", onMessageError);
-      session.addEventListener("error", onError);
-    });
-
-    try {
-      await session.generateRequest("cenc", initData);
-    } catch (error) {
-      throw new StageError(
-        "license",
-        "generate-request-failed",
-        null,
-        `generateRequest('cenc') → ${error?.name ?? "Error"}: ${error?.message ?? ""}`.trim()
-      );
-    }
-
     let message;
     try {
-      message = await Promise.race([
-        messagePromise,
-        wait(DEFAULT_TIMEOUT_MS).then(() => {
-          throw new Error("等待许可请求消息超时");
-        })
-      ]);
+      message = await managedSession.generateRequest(initData, { timeoutMs: DEFAULT_TIMEOUT_MS });
     } catch (error) {
-      throw new StageError("license", "generate-request-failed", null, error.message);
+      throw toStageError("license", error, "generate-request-failed");
     }
 
     let parsed;
@@ -405,6 +401,56 @@ export class EncryptionLab {
       );
     }
 
+    const { payload, target, status } = await this.requestLicense(context, kids);
+
+    if (!payload || !Array.isArray(payload.keys) || payload.keys.length === 0) {
+      throw new StageError("license", "malformed-response", null, "许可响应缺少 keys");
+    }
+
+    const matched = payload.keys.every((key) => {
+      if (key?.kty !== "oct" || typeof key.kid !== "string" || typeof key.k !== "string") return false;
+      return bytesToHex(base64UrlToBytes(key.kid)) === requestedKid;
+    });
+    if (!matched) {
+      throw new StageError(
+        "license",
+        "license-not-matching-init-data",
+        null,
+        "许可响应中的密钥标识与初始化数据不一致"
+      );
+    }
+
+    let licenseBytes = new TextEncoder().encode(JSON.stringify(payload));
+    let keyMaterialNote = "许可响应与初始化数据匹配";
+
+    if (scenario.licenseTransform === "corrupt-key-material") {
+      const corrupted = {
+        ...payload,
+        keys: payload.keys.map((key) => ({
+          ...key,
+          k: bytesToBase64Url(new Uint8Array(16).fill(0x5a))
+        }))
+      };
+      licenseBytes = new TextEncoder().encode(JSON.stringify(corrupted));
+      keyMaterialNote = "诊断：许可响应 200，但客户端把密钥材料替换为错误值";
+    }
+
+    context.license = payload;
+    context.licenseBytes = licenseBytes;
+    context.requestId = payload.requestId ?? null;
+    this.setStage("license", "passed", {
+      evidence: `HTTP ${status} · 请求 ${payload.requestId ?? "未提供"} · ${keyMaterialNote}`
+    });
+    this.emit("license", {
+      requestId: payload.requestId ?? null,
+      keyCount: payload.keys.length,
+      note: keyMaterialNote,
+      endpoint: target
+    });
+  }
+
+  async requestLicense(context, kids) {
+    const { scenario } = context;
     const requestBody = {
       assetId: this.manifest.assetId,
       kids,
@@ -450,51 +496,7 @@ export class EncryptionLab {
         }`
       );
     }
-
-    if (!payload || !Array.isArray(payload.keys) || payload.keys.length === 0) {
-      throw new StageError("license", "malformed-response", null, "许可响应缺少 keys");
-    }
-
-    const matched = payload.keys.every((key) => {
-      if (key?.kty !== "oct" || typeof key.kid !== "string" || typeof key.k !== "string") return false;
-      return bytesToHex(base64UrlToBytes(key.kid)) === requestedKid;
-    });
-    if (!matched) {
-      throw new StageError(
-        "license",
-        "license-not-matching-init-data",
-        null,
-        "许可响应中的密钥标识与初始化数据不一致"
-      );
-    }
-
-    let licenseBytes = new TextEncoder().encode(JSON.stringify(payload));
-    let keyMaterialNote = "许可响应与初始化数据匹配";
-
-    if (scenario.licenseTransform === "corrupt-key-material") {
-      const corrupted = {
-        ...payload,
-        keys: payload.keys.map((key) => ({
-          ...key,
-          k: bytesToBase64Url(new Uint8Array(16).fill(0x5a))
-        }))
-      };
-      licenseBytes = new TextEncoder().encode(JSON.stringify(corrupted));
-      keyMaterialNote = "诊断：许可响应 200，但客户端把密钥材料替换为错误值";
-    }
-
-    context.license = payload;
-    context.licenseBytes = licenseBytes;
-    context.requestId = payload.requestId ?? null;
-    this.setStage("license", "passed", {
-      evidence: `HTTP ${response.status} · 请求 ${payload.requestId ?? "未提供"} · ${keyMaterialNote}`
-    });
-    this.emit("license", {
-      requestId: payload.requestId ?? null,
-      keyCount: payload.keys.length,
-      note: keyMaterialNote,
-      endpoint: target
-    });
+    return { payload, target, status: response.status };
   }
 
   offlineEndpoint() {
@@ -504,55 +506,82 @@ export class EncryptionLab {
     return url.toString();
   }
 
-  async stageKey(context) {
-    this.setStage("key", "active");
-    const { session } = context;
-    const expected = context.requestedKid;
-
-    const statuses = new Map();
-    const collect = () => {
-      for (const [kidBuffer, status] of session.keyStatuses) {
-        statuses.set(bytesToHex(new Uint8Array(kidBuffer)), status);
-      }
-      return statuses;
-    };
-
+  async applyLicenseUpdate(context, licenseBytes) {
+    const { managedSession } = context;
     try {
-      await session.update(context.licenseBytes);
+      return await managedSession.update(licenseBytes, {
+        timeoutMs: KEY_STATUS_TIMEOUT_MS,
+        awaitKidHex: context.requestedKid
+      });
     } catch (error) {
-      throw new StageError(
-        "key",
-        "key-not-usable",
-        null,
-        `session.update 受到拒绝：${error?.name ?? "Error"}: ${error?.message ?? ""}`.trim()
-      );
+      throw toStageError("key", error, "key-update-failed");
     }
+  }
 
-    const deadline = performance.now() + KEY_STATUS_TIMEOUT_MS;
-    let status = statuses.get(expected);
-    while (performance.now() < deadline) {
-      status = collect().get(expected);
-      if (status === "usable") break;
-      await wait(50);
+  assertUsable(context, snapshot) {
+    let mapped;
+    try {
+      mapped = this.sessionAdapter.mapKeyStatuses(snapshot);
+    } catch (error) {
+      throw toStageError("key", error);
     }
-    collect();
-
-    const observed = [...statuses.entries()];
+    const observed = mapped.map(([kid, status]) => [kid, status]);
     const evidenceText =
       observed.length === 0
         ? "未观察到密钥状态"
         : observed.map(([kid, st]) => `${shortHex(kid)}:${st}`).join(" · ");
-
-    if (status === undefined) {
+    const entry = mapped.find(([kid]) => kid === context.requestedKid);
+    if (!entry) {
       throw new StageError("key", "key-status-missing", null, evidenceText);
     }
-    if (status !== "usable") {
-      throw new StageError("key", "key-not-usable", null, `密钥状态为 ${status}`);
+    const [, status, semantics] = entry;
+    if (!semantics.playable) {
+      throw new StageError("key", semantics.reason ?? "key-not-usable", null, `密钥状态为 ${status}`);
     }
+    return { observed, evidenceText };
+  }
 
+  async stageKey(context) {
+    this.setStage("key", "active");
+    const { scenario, managedSession } = context;
+
+    let snapshot = await this.applyLicenseUpdate(context, context.licenseBytes);
+    context.evidence.keyUpdates = 1;
+
+    if (scenario.keyUpdate === "renew-license") {
+      const kids = context.messageKids.map((hex) => bytesToBase64Url(hexToBytes(hex)));
+      let renewed;
+      try {
+        renewed = await this.requestLicense(context, kids);
+      } catch (error) {
+        if (error instanceof StageError) {
+          throw new StageError("key", error.reason, null, error.evidence);
+        }
+        throw error;
+      }
+      context.license = renewed.payload;
+      context.licenseBytes = new TextEncoder().encode(JSON.stringify(renewed.payload));
+      snapshot = await this.applyLicenseUpdate(context, context.licenseBytes);
+      context.evidence.keyUpdates = 2;
+      context.evidence.renewalRequestId = renewed.payload.requestId ?? null;
+    }
+    context.evidence.statusChangeEvents = managedSession.statusChangeEvents;
+
+    const { observed, evidenceText } = this.assertUsable(context, snapshot);
+    const updateNote =
+      context.evidence.keyUpdates > 1
+        ? ` · 密钥更新 ${context.evidence.keyUpdates} 次（keystatuseschange ×${context.evidence.statusChangeEvents}）`
+        : "";
     context.keystatuses = observed;
-    this.setStage("key", "passed", { evidence: evidenceText });
-    this.emit("key", { statuses: observed, kid: expected });
+    this.setStage("key", "passed", { evidence: `${evidenceText}${updateNote}` });
+    this.emit("key", { statuses: observed, kid: context.requestedKid });
+    if (context.evidence.keyUpdates > 1) {
+      this.emit("key-update", {
+        count: context.evidence.keyUpdates,
+        statusEvents: context.evidence.statusChangeEvents,
+        renewalRequestId: context.evidence.renewalRequestId
+      });
+    }
   }
 
   async stageDecode(context) {
@@ -788,15 +817,57 @@ export class EncryptionLab {
     }
 
     this.playback = { detach: cleanup };
-    this.setStage("decode", "passed", {
-      evidence: `已解码 ${evidence.frameCount}+ 帧 · 播放位置 ${evidence.currentTime.toFixed(2)}s`
-    });
+    const decodeEvidence = `已解码 ${evidence.frameCount}+ 帧 · 播放位置 ${evidence.currentTime.toFixed(2)}s`;
+    this.setStage("decode", "passed", { evidence: decodeEvidence });
     this.emit("decode", {
       frames: evidence.frameCount,
       currentTime: evidence.currentTime,
       duration: this.video.duration
     });
     this.emit("media-live", { active: true });
+
+    if (context.scenario.sessionEnd === "close-and-verify") {
+      const release = await this.closeAndVerifyRelease(context);
+      context.evidence.sessionRelease = release;
+      this.emit("session-release", { ...release, trigger: "scenario" });
+      this.setStage("decode", "passed", {
+        evidence: `${decodeEvidence} · 会话已关闭：密钥状态释放，画面停止推进`
+      });
+    }
+  }
+
+  async closeAndVerifyRelease(context) {
+    const frameCount = () => this.video.getVideoPlaybackQuality?.().totalVideoFrames ?? null;
+    if (frameCount() === null) {
+      throw new StageError("decode", "internal-error", null, "无法测量解码帧数（getVideoPlaybackQuality 不可用）");
+    }
+    let release;
+    try {
+      release = await context.managedSession.close({ timeoutMs: DEFAULT_TIMEOUT_MS });
+    } catch (error) {
+      throw toStageError("decode", error, "session-close-failed");
+    }
+    const framesAtClose = frameCount();
+    const timeAtClose = this.video.currentTime;
+    await wait(RELEASE_OBSERVE_FIRST_MS);
+    const framesMid = frameCount();
+    await wait(RELEASE_OBSERVE_SECOND_MS);
+    const framesEnd = frameCount();
+    const timeEnd = this.video.currentTime;
+    const playbackHalted = framesEnd - framesMid <= 2;
+    const observation = `关闭时帧 ${framesAtClose} · 观察窗帧 ${framesMid}→${framesEnd} · 播放位置 ${timeAtClose.toFixed(2)}s→${timeEnd.toFixed(2)}s`;
+    if (!playbackHalted) {
+      throw new StageError("decode", "session-close-failed", null, `会话关闭后画面仍在推进（${observation}）`);
+    }
+    return {
+      closed: release.closed,
+      keyStatusesReleased: release.keyStatusesReleased,
+      playbackHalted,
+      framesAtClose,
+      framesObserved: [framesMid, framesEnd],
+      currentTimeAtClose: timeAtClose,
+      currentTimeAfter: timeEnd
+    };
   }
 
   verdict() {

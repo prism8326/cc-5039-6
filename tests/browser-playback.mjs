@@ -92,7 +92,15 @@ const SCENARIO_EXPECTATIONS = [
   { id: "wrong-key", expectOk: false, stage: "license" },
   { id: "license-offline", expectOk: false, stage: "license" },
   { id: "session-failure", expectOk: false, stage: "session" },
-  { id: "mismatched-key-material", expectOk: false, stage: "decode" }
+  { id: "mismatched-key-material", expectOk: false, stage: "decode" },
+  {
+    id: "legacy-session-interface",
+    expectOk: false,
+    stage: "session",
+    failureTextIncludes: "eme-session/v1"
+  },
+  { id: "key-rotation", expectOk: true, stage: null, minKeyUpdates: 2 },
+  { id: "session-teardown", expectOk: true, stage: null, expectSessionRelease: true }
 ];
 
 async function main() {
@@ -175,6 +183,7 @@ async function main() {
         return {
           result: lab.lastOutcome,
           stages: lab.snapshotStages(),
+          sessionInterface: lab.sessionAdapter?.version ?? null,
           videoElement: {
             hasMediaKeys: Boolean(lab.video.mediaKeys),
             currentTime: lab.video.currentTime,
@@ -190,12 +199,13 @@ async function main() {
             verdictChip: document.getElementById("verdict-chip").textContent,
             failureVisible: !document.getElementById("failure-box").hidden,
             failureBody: document.getElementById("failure-body").textContent,
-            playerChip: document.getElementById("player-chip").textContent
+            playerChip: document.getElementById("player-chip").textContent,
+            sessionInterfaceLabel: document.getElementById("session-interface-label").textContent
           }
         };
       });
 
-      if (expectation.expectOk) {
+      if (expectation.expectOk && !expectation.expectSessionRelease) {
         const progress = await page.evaluate(async () => {
           const lab = window.__encryptionLab();
           const start = lab.video.currentTime;
@@ -221,10 +231,37 @@ async function main() {
         .filter((r) => r.url.includes("/api/license"))
         .slice(-1)[0] ?? null;
 
+      let evidenceOk = true;
+      let evidenceNote = "";
+      if (expectation.minKeyUpdates) {
+        const updates = outcome.result.evidence?.keyUpdates ?? 0;
+        evidenceOk = updates >= expectation.minKeyUpdates;
+        evidenceNote = `密钥更新 ${updates} 次`;
+      }
+      if (expectation.expectSessionRelease) {
+        const release = outcome.result.evidence?.sessionRelease;
+        evidenceOk =
+          release?.closed === true &&
+          release?.keyStatusesReleased === true &&
+          release?.playbackHalted === true;
+        evidenceNote = release
+          ? `会话关闭 ${release.closed} · 状态释放 ${release.keyStatusesReleased} · 画面停住 ${release.playbackHalted}`
+          : "缺少会话释放证据";
+      }
+      if (expectation.failureTextIncludes) {
+        evidenceOk = outcome.ui.failureBody.includes(expectation.failureTextIncludes);
+        evidenceNote = `界面提示含「${expectation.failureTextIncludes}」：${evidenceOk}`;
+      }
+      if (outcome.sessionInterface !== "eme-session/v2") {
+        evidenceOk = false;
+        evidenceNote = `${evidenceNote} · 接口版本异常：${outcome.sessionInterface}`.trim();
+      }
+
       const passed =
         outcome.result.ok === expectation.expectOk &&
         verdictOk === expectation.expectOk &&
         (expectation.stage === null || failedStage === expectation.stage) &&
+        evidenceOk &&
         (expectation.expectOk
           ? !outcome.playbackStalled &&
             outcome.mediaFrames > 0 &&
@@ -240,6 +277,8 @@ async function main() {
         failedStage,
         stages,
         licenseResponse,
+        sessionInterface: outcome.sessionInterface,
+        evidenceNote: evidenceNote || null,
         videoElement: outcome.videoElement,
         mediaFrames: outcome.mediaFrames,
         playbackProgress: outcome.playbackProgress ?? null,
@@ -252,10 +291,11 @@ async function main() {
             2
           )}s / 帧 ${outcome.playbackProgress.framesBefore}→${outcome.playbackProgress.framesAfter}`
         : "";
+      const noteText = evidenceNote ? ` · ${evidenceNote}` : "";
       log(
         `${expectation.id}: ${statusText} · 结果 ${outcome.result.ok ? "已验证" : "未通过"} · 失败阶段 ${
           failedStage ?? "无"
-        } · 原因 ${outcome.result.reason ?? "无"} · 界面 ${outcome.ui.verdictChip}${progressText}`
+        } · 原因 ${outcome.result.reason ?? "无"} · 界面 ${outcome.ui.verdictChip}${progressText}${noteText}`
       );
 
       await page.screenshot({
@@ -281,7 +321,7 @@ async function main() {
     if (consoleErrors.length) {
       log(`页面错误均为场景预期的拒绝（${consoleErrors.length} 条：403 拒绝与许可端断开）`);
     }
-    log("六个场景均符合预期（正常播放、改动初始化数据、错误密钥、许可端断开、会话创建失败、正确许可但错误密钥材料）");
+    log("九个场景均符合预期（正常播放、改动初始化数据、错误密钥、许可端断开、会话创建失败、正确许可但错误密钥材料、旧版会话接口配置、密钥更新、会话结束与资源释放）");
   } finally {
     await browser.close();
     server.child.kill("SIGTERM");

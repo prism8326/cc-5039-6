@@ -1,4 +1,5 @@
 import { createEncryptionLab } from "./kernel.js";
+import { createEmeSessionAdapter } from "./eme-session-adapter.js";
 import { STAGE_IDS, stageLabel, reasonText, overallVerdict } from "../../shared/stages.js";
 
 const video = document.getElementById("lesson-video");
@@ -22,6 +23,7 @@ const veilTitle = document.getElementById("veil-title");
 const veilBody = document.getElementById("veil-body");
 const playerChip = document.getElementById("player-chip");
 const keySystemLabel = document.getElementById("key-system-label");
+const sessionInterfaceLabel = document.getElementById("session-interface-label");
 const protectionNote = document.getElementById("protection-note");
 const courseSummary = document.getElementById("course-summary");
 const courseNote = document.getElementById("course-note");
@@ -164,7 +166,8 @@ function expectToReason(expect) {
       "denied-key-mismatch": "denied-key-mismatch",
       unreachable: "network-error",
       "session-failed": "session-unsupported",
-      "media-decode-failed": "media-decode-failed"
+      "media-decode-failed": "media-decode-failed",
+      "legacy-session-interface": "legacy-session-interface"
     }[expect] ?? expect
   );
 }
@@ -198,6 +201,11 @@ async function loadCourse() {
   keySystemLabel.textContent = course.license.keySystemLabel;
   protectionNote.textContent = course.protection.label;
 
+  const interfaceInfo = course.sessionInterface;
+  sessionInterfaceLabel.textContent = interfaceInfo
+    ? `${interfaceInfo.version}（自 ${interfaceInfo.previousVersion} 升级）`
+    : "未配置";
+
   credentialSelect.replaceChildren(
     ...course.credentials.map((credential) => {
       const option = document.createElement("option");
@@ -228,7 +236,24 @@ async function loadCourse() {
   syncCredentialHint();
   syncScenario();
 
-  lab = createEncryptionLab({ video, course, onEvent: handleEvent });
+  let sessionAdapter;
+  try {
+    sessionAdapter = createEmeSessionAdapter({ version: course.sessionInterface?.version });
+  } catch (error) {
+    setVeil({
+      title: "会话接口配置失效",
+      body: `${error.message}。加密教学界面已阻止本轮实验，不会静默改用其他版本。`,
+      clear: false
+    });
+    showFailure({
+      title: "会话接口配置失效",
+      body: error.message
+    });
+    setChip(playerChip, "不可用", "fail");
+    runButton.disabled = true;
+    return;
+  }
+  lab = createEncryptionLab({ video, course, sessionAdapter, onEvent: handleEvent });
   setChip(verdictChip, "未验证", "quiet");
 }
 
@@ -263,6 +288,23 @@ function handleEvent(event) {
     case "support":
       addEvent(`使用 ${event.label}（${event.videoType}）`);
       break;
+    case "session-interface":
+      addEvent(`加密会话接口 ${event.version}（自 ${event.previousVersion} 升级：${event.note}）`);
+      break;
+    case "key-update":
+      addEvent(
+        `密钥更新：同一会话第 ${event.count} 次 update 完成（keystatuseschange 事件 ×${event.statusEvents}，续期请求 ${event.renewalRequestId ?? "未提供"}）`
+      );
+      break;
+    case "session-release": {
+      if (event.closed && event.keyStatusesReleased) {
+        const suffix = event.trigger === "teardown" ? "（回收）" : "";
+        addEvent(`会话已关闭：密钥状态已释放${suffix}`);
+      } else {
+        addEvent(`会话关闭异常：${event.error ?? "密钥状态未释放"}`);
+      }
+      break;
+    }
     case "license-init":
       addEvent(`许可请求：${event.note}`);
       break;
@@ -296,9 +338,19 @@ function handleEvent(event) {
       setRunningUI(false);
       const verdict = renderVerdict(event.stages);
       if (event.outcome.ok) {
-        setVeil({ title: "", body: "", clear: true });
+        const released = event.outcome.evidence?.sessionRelease;
+        if (released?.keyStatusesReleased) {
+          setVeil({
+            title: "会话已结束",
+            body: "密钥状态已释放，画面停止推进。重新开始以再次验证。",
+            clear: false
+          });
+          setChip(playerChip, "已验证 · 会话已回收", "pass");
+        } else {
+          setVeil({ title: "", body: "", clear: true });
+          setChip(playerChip, "解密画面播放中", "pass");
+        }
         addEvent("授权链路已验证：许可、密钥与真实解码均成立");
-        setChip(playerChip, "解密画面播放中", "pass");
       } else {
         const stage = event.outcome.stage;
         const reason = event.outcome.reason;

@@ -12,6 +12,17 @@
     "endpointPath": "/api/license",
     "robustness": "软件测试密钥，不具备硬件 DRM 保护"
   },
+  "sessionInterface": {
+    "version": "eme-session/v2",
+    "previousVersion": "eme-session/v1",
+    "label": "加密会话接口 v2（事件驱动 · 显式关闭回收）",
+    "migration": [
+      "配置：能力检测与会话类型声明由适配层统一生成并显式化（initDataTypes / capabilities / sessionTypes / distinctiveIdentifier / persistentState）",
+      "事件：许可请求与密钥状态改由 message / keystatuseschange 事件驱动（v1 为定时轮询）",
+      "密钥状态映射：usable / expired / released / output-restricted / status-pending / internal-error 全量映射，未知状态报错而非默认放行",
+      "生命周期：会话必须显式 close() 并校验 keyStatuses 释放，禁止以默认值掩盖释放失败"
+    ]
+  },
   "mediaAsset": {
     "assetId": "lesson-authorization-01",
     "primaryKeyId": "kid-primary",
@@ -92,6 +103,36 @@
       "licenseTransform": "corrupt-key-material",
       "expect": "media-decode-failed",
       "teachingPoint": "收到许可、甚至密钥状态可用，都不等于画面可解码。"
+    },
+    {
+      "id": "legacy-session-interface",
+      "label": "诊断：旧版会话接口配置",
+      "summary": "场景把会话接口固定为已下线的 eme-session/v1，适配层拒绝并解释失效原因。",
+      "credentialId": "kid-primary",
+      "initDataMode": "as-packaged",
+      "sessionInterface": "eme-session/v1",
+      "expect": "legacy-session-interface",
+      "teachingPoint": "旧配置失效必须给出可解释原因，不得静默改用新版本。"
+    },
+    {
+      "id": "key-rotation",
+      "label": "诊断：密钥更新",
+      "summary": "首次许可后重新取回许可并在同一会话再次 update，观察 keystatuseschange 事件与状态映射。",
+      "credentialId": "kid-primary",
+      "initDataMode": "as-packaged",
+      "keyUpdate": "renew-license",
+      "expect": "granted",
+      "teachingPoint": "密钥更新走同一会话的 update；重复同一密钥不一定再触发事件，状态以 CDM 当前报告为准。"
+    },
+    {
+      "id": "session-teardown",
+      "label": "诊断：会话结束与资源释放",
+      "summary": "真实解码出帧后显式 close() 会话，校验 keyStatuses 释放且画面停止推进。",
+      "credentialId": "kid-primary",
+      "initDataMode": "as-packaged",
+      "sessionEnd": "close-and-verify",
+      "expect": "granted",
+      "teachingPoint": "可播放状态与资源释放都要落到执行证据：关闭后帧数不再增长。"
     }
   ],
   "protection": {

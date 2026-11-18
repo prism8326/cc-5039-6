@@ -131,6 +131,7 @@ const server = createServer(async (req, res) => {
         credentials: lesson.credentials,
         scenarios: lesson.scenarios,
         diagnostics: lesson.diagnostics,
+        sessionInterface: lesson.sessionInterface,
         protection: lesson.protection
       });
       return;

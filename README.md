@@ -13,14 +13,15 @@ npm start               # 图形入口：http://127.0.0.1:4173/
 ```
 
 图形入口为主要交付：在浏览器中选择测试凭据与实验场景，由加密教学内核驱动播放，
-结果区呈现五阶段授权状态与真实解密画面。
+结果区呈现五阶段授权状态与真实解密画面。加密会话接口接入版本为 **eme-session/v2**
+（自 eme-session/v1 升级，迁移说明见 docs/README.md「加密会话接口版本」）。
 
 ## 辅助命令
 
 ```bash
 npm run license:demo     # 许可端演练（辅助，非主入口）
 npm run verify:flow      # 许可内核断言
-npm run verify:browser   # 浏览器端到端验证（六个场景）
+npm run verify:browser   # 浏览器端到端验证（九个场景）
 ```
 
 ClearKey 是软件测试密钥系统，不具备商业硬件 DRM 的能力，详见文档中的「保护强度范围」。

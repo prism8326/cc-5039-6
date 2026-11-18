@@ -119,9 +119,40 @@ check("场景与诊断都由内核状态机描述", () => {
   const ids = lesson.scenarios.map((s) => s.id);
   assert.deepEqual(ids, ["normal", "init-data-mismatch", "wrong-key", "license-offline"]);
   const diagnostics = lesson.diagnostics.map((d) => d.id);
-  assert.deepEqual(diagnostics, ["session-failure", "mismatched-key-material"]);
+  assert.deepEqual(diagnostics, [
+    "session-failure",
+    "mismatched-key-material",
+    "legacy-session-interface",
+    "key-rotation",
+    "session-teardown"
+  ]);
   assert.ok(lesson.protection.limits.length >= 3);
   assert.equal(lesson.protection.strength, "software-test-key");
+});
+
+check("会话接口接入版本已升级并注明旧版本", () => {
+  assert.equal(lesson.sessionInterface.version, "eme-session/v2");
+  assert.equal(lesson.sessionInterface.previousVersion, "eme-session/v1");
+  assert.ok(
+    Array.isArray(lesson.sessionInterface.migration) && lesson.sessionInterface.migration.length >= 3,
+    "必须注明配置、事件与密钥状态映射的迁移说明"
+  );
+});
+
+check("旧版会话接口配置有专门诊断且失效原因可解释", () => {
+  const legacy = lesson.diagnostics.find((d) => d.id === "legacy-session-interface");
+  assert.ok(legacy, "缺少旧版会话接口诊断");
+  assert.equal(legacy.sessionInterface, "eme-session/v1");
+  assert.equal(legacy.expect, "legacy-session-interface");
+});
+
+check("密钥更新与会话结束都有可运行材料", () => {
+  const rotation = lesson.diagnostics.find((d) => d.id === "key-rotation");
+  assert.equal(rotation?.keyUpdate, "renew-license");
+  assert.equal(rotation?.expect, "granted");
+  const teardown = lesson.diagnostics.find((d) => d.id === "session-teardown");
+  assert.equal(teardown?.sessionEnd, "close-and-verify");
+  assert.equal(teardown?.expect, "granted");
 });
 
 const failed = results.filter((r) => !r.ok);
